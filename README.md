@@ -28,8 +28,9 @@ listed at the bottom.
 
 ## Pack pinout, X036
 
-Viewed at the connector on the pack. See `img/x036_pinout.png` for the
-full extraction and `img/x036_wiring.jpg` for one worked example.
+Viewed at the connector on the pack. 
+![x036](img/x036_pinout.png)
+
 
 | Pin | Signal            | Notes                       |
 |-----|-------------------|-----------------------------|
@@ -44,13 +45,16 @@ full extraction and `img/x036_wiring.jpg` for one worked example.
 | 11  | HVIL Out          | to car                      |
 | 12  | GND-BMS           |                             |
 
+
+The way I ![connected it](img/x036_wiring.jpg) as an example.
+
 To read cell voltages you need at minimum: 12 V on pin 2, GND on pin 8 or
 12, CAN pair on 9 (L) and 10 (H) at 500 kbit/s. The BMS wakes on any bus
 traffic. The tool sends a heartbeat every 5 s.
 
 Contactors do NOT need to close to read cell data. If you do want
 contactors, jumper HVIL closed with 180 Ω between X036/11 (out) and
-X035/10 (in) on the other connector. Read the safety notes first.
+X035/10 (in) on the other connector, butead the safety notes first.
 
 X035 (black, keyA) mirrors PT_CAN on its own pins for daisy-chaining. Do
 not use X035 pins 3/4 for cell data, those are FC_CAN and carry no BMS
@@ -105,14 +109,21 @@ every module before deciding it is the only one.
 oxidation around C26 and C27 on the small BMB PCB stuck to the module
 top. Symptom: bricks above the mid-tap collapse to near zero or a
 nonsense sub-1 V, bricks below read about 100 mV low but stay plausible.
-Photo in `img/c26_c27_corrosion.jpg`. Clean with IPA and a stiff brush,
-check the caps' solder joints, replace if the joints look eaten.
+
+![See](img/c26_c27_corrosion.jpg) 
+
+Clean with IPA and a stiff brush, check the caps' solder joints, replace if the joints look eaten.
+
+C26, C27 are 2.2uF 50V X7R 1026 capacitors, get them from your friendly disti, eg Digikey (490-4796-1-ND), TME etc
 
 **Loose orange sense wire on the bottom of the module.** The main-tap
 wires clip into the BMB. Vibration and corrosion loosen them. Symptom:
 one brick reads as an outlier (tens of mV off pack median) while the
-other five on that module are fine. Photo in `img/loose_sense_wire.jpg`.
-Reseat and re-tension.
+other five on that module are fine
+
+![See](img/loose_sense_wire.jpg)
+
+Extend the sense wire and pop rivet it to the aluminium plate using a crimped eyelet.
 
 **Broken BMB daisy chain.** The 16 BMB slaves talk to the master BMS over
 a UART daisy chain at 612500 baud. Pull a BMB or lose a link and every
@@ -120,9 +131,13 @@ BMB downstream goes dark too. If your dashboard shows temps but no brick
 voltages, and pack V reports SNA (0x102 with bytes 2-5 all 0xFF), suspect
 a broken link.
 
-**Water at the pack floor.** Photo in `img/pack_water_ingress.jpg`.
+**Water at the pack floor.** ![See](img/pack_water_ingress.jpg)
+
 Regardless of what the BMS says, inspect the physical pack floor for
 water damage. Dry, dry again, then diagnose.
+
+Consider replacing the umbrella vaves with  - ASY,VENTS,GANGED,HVBATT
+1517973-00-A
 
 ## CAN decoding
 
@@ -172,12 +187,6 @@ limits. Reading cell data does NOT require contactor closure.
 The BMB PCBs are referenced to module HV. Do not probe them with a
 grounded oscilloscope.
 
-## Credits
-
-Cell voltage decode confirmed against OVMS Model S vehicle module,
-Battery-Emulator's TESLA-LEGACY driver, and TM-Spy / ScanMyTesla
-reference implementations. X036 pinout from Tesla factory circuit
-diagrams via Corsa.
 
 ## License
 
