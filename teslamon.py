@@ -42,11 +42,13 @@ UDS_REQ_ID = 0x602
 UDS_RSP_ID = 0x612
 UDS_KEY = bytes([0x35, 0x34, 0x37, 0x36, 0x31, 0x30, 0x33, 0x32,
                  0x3D, 0x3C, 0x3F, 0x3E, 0x39, 0x38, 0x3B, 0x3A])
-# Fault-clear routine IDs to enumerate, and tentative names from the AIDBOX
-# request/response trace (main trace pairs; treat names as approximate).
+# Fault routine IDs and names, from Battery-Emulator's TESLA-LEGACY driver.
+# Reading uses 0x31 03 (requestRoutineResults); clearing uses 0x31 01
+# (startRoutine) with the same routine id.
 FAULT_ROUTINES = list(range(0x0401, 0x0411))
-FAULT_NAMES = {0x0401: "~u025", 0x040A: "~F026", 0x040C: "~F152",
-               0x040D: "~F107"}
+FAULT_NAMES = {0x0401: "w026", 0x0402: "f023", 0x0404: "f152", 0x0405: "f153",
+               0x0406: "w161", 0x0407: "WOT", 0x040A: "f026", 0x040C: "u029",
+               0x040D: "f107"}
 
 state = {
     "bricks": [None] * N_BRICKS,
@@ -241,81 +243,112 @@ def snapshot():
     )
 
 
-def uds_read_faults():
-    """Blocking: open a dedicated socket, unlock security, and READ each
-    fault routine's result (0x31 03, requestRoutineResults). Never sends
-    0x31 01 (startRoutine / clear). Returns a result dict."""
-    bus = can.Bus(channel=CAN_IFACE, interface="socketcan")
-
+def _isotp_send(bus, payload):
     def raw(data):
         bus.send(can.Message(arbitration_id=UDS_REQ_ID,
                              data=data.ljust(8, b"\x00"), is_extended_id=False))
+    if len(payload) <= 7:
+        raw(bytes([len(payload)]) + payload)
+        return
+    total = len(payload)
+    raw(bytes([0x10 | (total >> 8), total & 0xFF]) + payload[:6])
+    dl = time.time() + 1.0
+    while time.time() < dl:
+        m = bus.recv(timeout=dl - time.time())
+        if m and m.arbitration_id == UDS_RSP_ID and (m.data[0] >> 4) == 3:
+            break
+    idx, sn = 6, 1
+    while idx < total:
+        raw(bytes([0x20 | (sn & 0x0F)]) + payload[idx:idx + 7])
+        idx += 7
+        sn += 1
+        time.sleep(0.005)
 
-    def send(payload):
-        if len(payload) <= 7:
-            raw(bytes([len(payload)]) + payload)
-            return
-        total = len(payload)
-        raw(bytes([0x10 | (total >> 8), total & 0xFF]) + payload[:6])
-        dl = time.time() + 1.0
-        while time.time() < dl:
-            m = bus.recv(timeout=dl - time.time())
-            if m and m.arbitration_id == UDS_RSP_ID and (m.data[0] >> 4) == 3:
-                break
-        idx, sn = 6, 1
-        while idx < total:
-            raw(bytes([0x20 | (sn & 0x0F)]) + payload[idx:idx + 7])
-            idx += 7
-            sn += 1
-            time.sleep(0.005)
 
-    def recv(timeout=1.2):
-        dl = time.time() + timeout
-        buf = b""
-        exp = None
-        while time.time() < dl:
-            m = bus.recv(timeout=max(0.01, dl - time.time()))
-            if not m or m.arbitration_id != UDS_RSP_ID:
-                continue
-            d = m.data
-            pci = d[0] >> 4
-            if pci == 0:
-                return d[1:1 + (d[0] & 0x0F)]
-            if pci == 1:
-                exp = ((d[0] & 0x0F) << 8) | d[1]
-                buf = bytes(d[2:8])
-                raw(bytes([0x30, 0, 0]))
-            elif pci == 2:
-                buf += bytes(d[1:8])
-                if exp and len(buf) >= exp:
-                    return buf[:exp]
-        return buf or None
+def _isotp_recv(bus, timeout=1.2):
+    dl = time.time() + timeout
+    buf = b""
+    exp = None
+    while time.time() < dl:
+        m = bus.recv(timeout=max(0.01, dl - time.time()))
+        if not m or m.arbitration_id != UDS_RSP_ID:
+            continue
+        d = m.data
+        pci = d[0] >> 4
+        if pci == 0:
+            return d[1:1 + (d[0] & 0x0F)]
+        if pci == 1:
+            exp = ((d[0] & 0x0F) << 8) | d[1]
+            buf = bytes(d[2:8])
+            bus.send(can.Message(arbitration_id=UDS_REQ_ID,
+                                 data=bytes([0x30, 0, 0]).ljust(8, b"\x00"),
+                                 is_extended_id=False))
+        elif pci == 2:
+            buf += bytes(d[1:8])
+            if exp and len(buf) >= exp:
+                return buf[:exp]
+    return buf or None
 
-    def req(payload, t=1.2):
-        send(payload)
-        return recv(t)
 
+def _uds_unlock(bus):
+    _isotp_send(bus, bytes([0x10, 0x03]))
+    _isotp_recv(bus)
+    _isotp_send(bus, bytes([0x27, 0x05]))
+    _isotp_recv(bus)
+    _isotp_send(bus, bytes([0x27, 0x06]) + UDS_KEY)
+    r = _isotp_recv(bus)
+    return bool(r and r[0] == 0x67)
+
+
+def _enumerate_faults(bus):
+    faults = []
+    for rid in FAULT_ROUTINES:
+        _isotp_send(bus, bytes([0x31, 0x03, rid >> 8, rid & 0xFF]))
+        r = _isotp_recv(bus)
+        if r is None or r[0] == 0x7F or len(r) < 5:
+            continue
+        status = r[4]
+        faults.append({
+            "routine": rid,
+            "name": FAULT_NAMES.get(rid, ""),
+            "status": status,
+            "active": status != 0,
+            "raw": r.hex(),
+        })
+    return faults
+
+
+def uds_read_faults():
+    """Blocking: unlock security and READ each fault routine (0x31 03,
+    requestRoutineResults). Never sends 0x31 01 (startRoutine / clear)."""
+    bus = can.Bus(channel=CAN_IFACE, interface="socketcan")
     try:
-        req(bytes([0x10, 0x03]))
-        req(bytes([0x27, 0x05]))
-        unlock = req(bytes([0x27, 0x06]) + UDS_KEY)
-        if not unlock or unlock[0] != 0x67:
+        if not _uds_unlock(bus):
             return {"ok": False, "error": "security access denied",
                     "ts": time.time()}
-        faults = []
-        for rid in FAULT_ROUTINES:
-            r = req(bytes([0x31, 0x03, rid >> 8, rid & 0xFF]))
-            if r is None or r[0] == 0x7F or len(r) < 5:
-                continue  # invalid/absent routine
-            status = r[4]
-            faults.append({
-                "routine": rid,
-                "name": FAULT_NAMES.get(rid, ""),
-                "status": status,
-                "active": status != 0,
-                "raw": r.hex(),
-            })
-        return {"ok": True, "ts": time.time(), "faults": faults}
+        return {"ok": True, "ts": time.time(), "faults": _enumerate_faults(bus)}
+    finally:
+        bus.shutdown()
+
+
+def uds_clear_fault(routine):
+    """Blocking: unlock security, START the clear routine (0x31 01) for one
+    fault, then re-enumerate. Only routines in FAULT_ROUTINES are allowed."""
+    if routine not in FAULT_ROUTINES:
+        return {"ok": False, "error": "unknown routine", "ts": time.time()}
+    bus = can.Bus(channel=CAN_IFACE, interface="socketcan")
+    try:
+        if not _uds_unlock(bus):
+            return {"ok": False, "error": "security access denied",
+                    "ts": time.time()}
+        _isotp_send(bus, bytes([0x31, 0x01, routine >> 8, routine & 0xFF]))
+        resp = _isotp_recv(bus)
+        cleared = bool(resp and resp[0] == 0x71)
+        time.sleep(0.3)
+        return {"ok": True, "ts": time.time(), "cleared_routine": routine,
+                "clear_ok": cleared,
+                "clear_resp": resp.hex() if resp else None,
+                "faults": _enumerate_faults(bus)}
     finally:
         bus.shutdown()
 
@@ -387,10 +420,20 @@ async def csv_logger():
 
 
 async def resetter(request):
+    """Full monitor restart: wipe all accumulated live state so the display
+    rebuilds from scratch (min/max, balancing/excursion tracking, cached
+    readings, frame count). Keeps the CAN link and web server up."""
     for i in range(N_BRICKS):
+        state["bricks"][i] = None
         state["brick_min"][i] = None
         state["brick_max"][i] = None
-    return web.Response(text="min/max cleared\n")
+        brick_last_event[i] = None
+    for i in range(N_TEMPS):
+        state["temps"][i] = None
+    for i in range(N_MUX):
+        state["mux_data_seen"][i] = None
+    state["frame_count"] = 0
+    return web.Response(text="monitor restarted\n")
 
 
 dtc_lock = asyncio.Lock()
@@ -404,6 +447,23 @@ async def readdtc_handler(request):
     async with dtc_lock:
         result = await asyncio.to_thread(uds_read_faults)
     state["dtc"] = result
+    return web.json_response(result)
+
+
+async def clearfault_handler(request):
+    if state["can_status"] != "ok":
+        return web.json_response({"ok": False, "error": "no CAN adapter"})
+    try:
+        routine = int(request.query.get("routine", ""), 0)
+    except ValueError:
+        return web.json_response({"ok": False, "error": "bad routine"})
+    if dtc_lock.locked():
+        return web.json_response({"ok": False, "error": "read in progress"})
+    async with dtc_lock:
+        result = await asyncio.to_thread(uds_clear_fault, routine)
+    if result.get("ok"):
+        state["dtc"] = {"ok": True, "ts": result["ts"],
+                        "faults": result["faults"]}
     return web.json_response(result)
 
 
@@ -458,6 +518,7 @@ async def main():
     app.router.add_get("/state", state_handler)
     app.router.add_post("/reset", resetter)
     app.router.add_post("/readdtc", readdtc_handler)
+    app.router.add_post("/clearfault", clearfault_handler)
     app.router.add_get("/log.csv", csv_handler)
     runner = web.AppRunner(app)
     await runner.setup()
