@@ -181,16 +181,19 @@ Two BMS behaviors worth knowing when watching this bus:
   different block every ~10 s). This is normal, not a dropout. Never
   clear cached values on an all-FF frame; a genuinely unreachable BMB
   (broken daisy chain) stops producing data frames entirely.
-- **Periodic per-module self-test pulses.** Every ~40 s the BMS pulses a
-  test current through each module's sense taps for one 0x6F2 refresh
-  (~4 s), on a fixed rota. On healthy taps the reading shift is under
-  the noise floor. On corroded or high-resistance taps it shows up as a
-  zero-sum deflection across adjacent bricks (e.g. +17/-58/+41 mV that
-  reverts 4 s later). The excursion log at the bottom of the dashboard
-  captures these, which turns the BMS's own self-test into a tap
-  resistance tester: modules that log repeating, identical-magnitude
-  excursion pairs have bad sense connections; modules that stay silent
-  are clean.
+- **Periodic balance/bleed pulses.** The BMS periodically switches a
+  bleed load across selected bricks (on this pack: 3 s on, ~40 s
+  period). While the bleed is on, the bleed current's IR drop in the
+  sense-tap wiring shifts the readings: the bled brick reads low by the
+  sum of both tap-wire drops, and each neighbour reads high by one
+  drop. The deflections obey a checkable identity (the neighbours' rises
+  sum to the bled brick's dip, e.g. -58 = +41 and +17). Typical healthy
+  harness numbers are 40 mV on the shared tap and 15-20 mV on the other,
+  so repeating +-40-60 mV excursion pairs in the log are NORMAL and do
+  not indicate a fault. Which bricks get bled is recomputed by the BMS
+  per power cycle, so the pulse locations move between boots. A
+  genuinely bad tap looks different: an outsized pulse (hundreds of mV)
+  or a resting offset that never reverts.
 
 BMS wake: the pack broadcasts nothing on a silent bus. Any single frame
 at 500 kbit/s wakes it. The tool sends `0x555` with one zero data byte
