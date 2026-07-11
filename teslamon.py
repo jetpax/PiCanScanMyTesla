@@ -14,6 +14,7 @@ Frame formats (validated empirically against this pack, 2026-07-02):
 """
 
 import asyncio
+import collections
 import csv
 import json
 import os
@@ -50,8 +51,11 @@ state = {
     "started": time.time(),
     "can_status": "starting",
     "can_error": None,
+    "health": {},
 }
+events = collections.deque(maxlen=1000)
 clients = set()
+EXCURSION_MV = 15.0
 
 
 def unpack14(data):
@@ -82,6 +86,18 @@ def handle_frame(msg):
                     continue
                 bi = 4 * mux + k
                 v = round(raw * 0.000305, 4)
+                prev = state["bricks"][bi]
+                if prev is not None and abs(v - prev) * 1000 > EXCURSION_MV:
+                    events.append(
+                        {
+                            "ts": round(time.time(), 3),
+                            "brick": bi + 1,
+                            "module": bi // BRICKS_PER_MODULE + 1,
+                            "from_v": prev,
+                            "to_v": v,
+                            "delta_mv": round((v - prev) * 1000),
+                        }
+                    )
                 state["bricks"][bi] = v
                 got_data = True
                 lo = state["brick_min"][bi]
@@ -112,6 +128,54 @@ def handle_frame(msg):
         state["pack_a"] = round(
             int.from_bytes(d[2:4], "little", signed=True) * 0.1, 1
         )
+    elif msg.arbitration_id == 0x212 and len(d) >= 4:
+        h = state["health"]
+        h["hvil_open"] = bool((d[0] >> 6) & 1)
+        h["bms_state"] = (d[2] >> 4) & 0x0F
+        h["contactor"] = d[2] & 0x0F
+        h["iso_kohm"] = None if d[3] == 0xFF else d[3] * 20
+    elif msg.arbitration_id == 0x202 and len(d) >= 8:
+        h = state["health"]
+        h["vmin_limit"] = round(int.from_bytes(d[0:2], "little") * 0.01, 1)
+        h["vmax_limit"] = round(int.from_bytes(d[2:4], "little") * 0.01, 1)
+        h["max_chg_a"] = round(
+            (int.from_bytes(d[4:6], "little") & 0x3FFF) * 0.1, 1
+        )
+    elif msg.arbitration_id == 0x382 and len(d) >= 8:
+        bits = int.from_bytes(d, "little")
+        raws = [(bits >> (10 * k)) & 0x3FF for k in range(5)]
+        h = state["health"]
+        full = raws[0] if raws[0] < 1000 else None
+        h["nom_full_kwh"] = round(full * 0.1, 1) if full else None
+
+        def rem(raw):
+            if raw >= 1000 or (full and raw > full):
+                return None
+            return round(raw * 0.1, 1)
+
+        h["nom_remaining_kwh"] = rem(raws[1])
+        h["ideal_remaining_kwh"] = rem(raws[3])
+    elif msg.arbitration_id == 0x3D2 and len(d) >= 8:
+        h = state["health"]
+        h["lifetime_charge_kwh"] = round(
+            int.from_bytes(d[0:4], "little") / 1000.0, 1
+        )
+        h["lifetime_discharge_kwh"] = round(
+            int.from_bytes(d[4:8], "little") / 1000.0, 1
+        )
+    elif msg.arbitration_id == 0x562 and len(d) >= 4:
+        state["health"]["odometer_mi"] = round(
+            int.from_bytes(d[0:4], "little") * 0.001
+        )
+    elif msg.arbitration_id == 0x332 and len(d) >= 8:
+        mx = round((((d[1] & 0x0F) << 8) | d[0]) * 0.002, 3)
+        mn = round(int.from_bytes(d[4:6], "little") * 0.002, 3)
+        if 2.0 < mn <= mx < 4.5:
+            h = state["health"]
+            h["bms_brick_max"] = mx
+            h["bms_brick_min"] = mn
+            h["bms_temp_max"] = round(d[3] * 0.5 - 40, 1)
+            h["bms_temp_min"] = round(d[7] * 0.5 - 40, 1)
 
 
 def effective_readings():
@@ -163,6 +227,8 @@ def snapshot():
             "now": time.time(),
             "can_status": state["can_status"],
             "can_error": state["can_error"],
+            "health": state["health"],
+            "events": list(events)[-50:][::-1],
         }
     )
 

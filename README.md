@@ -154,10 +154,43 @@ Consider replacing the umbrella vaves with  - ASY,VENTS,GANGED,HVBATT
     x0.0122 °C. Two sensors per module.
   - Raw 0 or 0x3FFF means "no data".
 
-Other frames the BMS broadcasts that the tool does not currently decode:
-`0x202` (drive limits), `0x212` (BMS status: contactors, HVIL,
-isolation), `0x232` (power limits), `0x332` (brick min/max summary),
-`0x382` (energy state), `0x3D2` (lifetime kWh), `0x5D2` (pack ID).
+Also decoded into the health panel:
+
+- `0x212` HVIL bit (d0 bit 6), BMS state (d2 high nibble), contactor
+  state (d2 low nibble), isolation (d3 x 20 kOhm, 0xFF = not measured)
+- `0x202` pack voltage limits (bytes 0-1 and 2-3, u16 LE x 0.01 V),
+  max charge current (bytes 4-5, 14-bit x 0.1 A)
+- `0x332` BMS's own brick min/max ( ((d1 and 0x0F)<<8 | d0) x 2 mV max,
+  bytes 4-5 x 2 mV min) and pack temp min/max (d3, d7: x 0.5 - 40 C).
+  Useful as a cross-check of the 0x6F2 decode.
+- `0x382` energy status, 10-bit LE fields x 0.1 kWh. Field 0 = nominal
+  full energy (pack capacity, the SoH headline). Remaining-energy fields
+  read saturated/invalid on a bench pack, treat values >= nominal full
+  as SNA.
+- `0x3D2` lifetime energy, u32 LE Wh: bytes 0-3 = total charged,
+  bytes 4-7 = total discharged (ratio gives round-trip efficiency,
+  expect ~92%)
+- `0x562` battery odometer, u32 LE x 0.001 mi
+
+`0x5D2` is multiplexed (byte 0 = index), layout unknown, not decoded.
+
+Two BMS behaviors worth knowing when watching this bus:
+
+- **Rotating invalidate cadence.** The BMS periodically retransmits one
+  8-mux block of 0x6F2 as all-FF (8 consecutive frames, 0.1 s apart, a
+  different block every ~10 s). This is normal, not a dropout. Never
+  clear cached values on an all-FF frame; a genuinely unreachable BMB
+  (broken daisy chain) stops producing data frames entirely.
+- **Periodic per-module self-test pulses.** Every ~40 s the BMS pulses a
+  test current through each module's sense taps for one 0x6F2 refresh
+  (~4 s), on a fixed rota. On healthy taps the reading shift is under
+  the noise floor. On corroded or high-resistance taps it shows up as a
+  zero-sum deflection across adjacent bricks (e.g. +17/-58/+41 mV that
+  reverts 4 s later). The excursion log at the bottom of the dashboard
+  captures these, which turns the BMS's own self-test into a tap
+  resistance tester: modules that log repeating, identical-magnitude
+  excursion pairs have bad sense connections; modules that stay silent
+  are clean.
 
 BMS wake: the pack broadcasts nothing on a silent bus. Any single frame
 at 500 kbit/s wakes it. The tool sends `0x555` with one zero data byte
