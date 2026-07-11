@@ -30,8 +30,7 @@ BROADCAST_PERIOD = 1.0
 LOG_PERIOD = 10.0
 LOG_PATH = "/var/log/teslamon.csv"
 CAN_RETRY_PERIOD = 3.0
-MUX_STALE_S = 15.0
-MUX_SNA_MASK_THRESHOLD = 0.4
+MUX_DATA_STALE_S = 45.0
 N_BRICKS = 96
 N_TEMPS = 32
 N_MUX = 32
@@ -42,8 +41,7 @@ state = {
     "temps": [None] * N_TEMPS,
     "brick_min": [None] * N_BRICKS,
     "brick_max": [None] * N_BRICKS,
-    "mux_last_seen": [None] * N_MUX,
-    "mux_sna_ewma": [0.0] * N_MUX,
+    "mux_data_seen": [None] * N_MUX,
     "pack_v": None,
     "pack_a": None,
     "soc": None,
@@ -69,50 +67,42 @@ def handle_frame(msg):
         mux = d[0]
         if mux >= N_MUX:
             return
-        state["mux_last_seen"][mux] = time.time()
-        is_all_ff = d[1:8] == b"\xff" * 7
-        vals = None if is_all_ff else unpack14(d)
-        is_sna = is_all_ff
+        # The BMS periodically retransmits each 8-mux block as all-FF (a
+        # rotating invalidate marker, one block every ~10 s). This is normal
+        # cadence, not a fault: ignore those frames entirely. A genuinely
+        # unreachable BMB produces NO data frames at all, which surfaces as
+        # data-staleness in effective_readings().
+        if d[1:8] == b"\xff" * 7:
+            return
+        vals = unpack14(d)
+        got_data = False
         if mux < 24:
-            if not is_all_ff:
-                for k, raw in enumerate(vals):
-                    if raw in (0, 0x3FFF):
-                        continue
-                    bi = 4 * mux + k
-                    v = round(raw * 0.000305, 4)
-                    state["bricks"][bi] = v
-                    lo = state["brick_min"][bi]
-                    hi = state["brick_max"][bi]
-                    if lo is None or v < lo:
-                        state["brick_min"][bi] = v
-                    if hi is None or v > hi:
-                        state["brick_max"][bi] = v
-        else:
-            valid_count = 0
-            for k in range(4):
-                ti = 4 * (mux - 24) + k
-                if is_all_ff:
-                    state["temps"][ti] = None
+            for k, raw in enumerate(vals):
+                if raw in (0, 0x3FFF):
                     continue
-                raw = vals[k]
+                bi = 4 * mux + k
+                v = round(raw * 0.000305, 4)
+                state["bricks"][bi] = v
+                got_data = True
+                lo = state["brick_min"][bi]
+                hi = state["brick_max"][bi]
+                if lo is None or v < lo:
+                    state["brick_min"][bi] = v
+                if hi is None or v > hi:
+                    state["brick_max"][bi] = v
+        else:
+            for k, raw in enumerate(vals):
                 if raw == 0x3FFF:
-                    state["temps"][ti] = None
                     continue
                 if raw & 0x2000:
                     raw -= 0x4000
                 t = round(raw * 0.0122, 2)
                 if t < -50 or t > 120:
-                    state["temps"][ti] = None
-                else:
-                    state["temps"][ti] = t
-                    valid_count += 1
-            if not is_all_ff and valid_count == 0:
-                is_sna = True
-        alpha = 0.3
-        state["mux_sna_ewma"][mux] = (
-            alpha * (1.0 if is_sna else 0.0)
-            + (1.0 - alpha) * state["mux_sna_ewma"][mux]
-        )
+                    continue
+                state["temps"][4 * (mux - 24) + k] = t
+                got_data = True
+        if got_data:
+            state["mux_data_seen"][mux] = time.time()
     elif msg.arbitration_id == 0x302 and len(d) >= 2:
         raw = d[0] + ((d[1] & 0x03) << 8)
         if raw:
@@ -124,32 +114,17 @@ def handle_frame(msg):
         )
 
 
-def current_mux_sna(mux):
-    """SNA rate for a mux with time-decay applied. If a mux stops firing, its
-    stored EWMA no longer reflects current state, so decay it toward zero
-    after a grace period."""
-    ewma = state["mux_sna_ewma"][mux]
-    last = state["mux_last_seen"][mux]
-    if last is None:
-        return 0.0
-    dt = time.time() - last
-    if dt <= 5.0:
-        return ewma
-    return ewma * (0.5 ** ((dt - 5.0) / 15.0))
-
-
 def effective_readings():
-    """Return (bricks, temps) with muxes masked to None when either the mux
-    hasn't been heard in MUX_STALE_S seconds, or its short-term SNA rate has
-    exceeded MUX_SNA_MASK_THRESHOLD (i.e. multiple SNA frames in a row)."""
+    """Return (bricks, temps) with a mux masked to None once it has delivered
+    no real data for MUX_DATA_STALE_S seconds (several full broadcast cycles).
+    That is the signature of an unreachable BMB / broken daisy chain; the
+    BMS's routine all-FF invalidate bursts never trigger it."""
     now = time.time()
     bricks = list(state["bricks"])
     temps = list(state["temps"])
     for m in range(N_MUX):
-        last = state["mux_last_seen"][m]
-        stale_time = last is None or (now - last) > MUX_STALE_S
-        stale_sna = current_mux_sna(m) > MUX_SNA_MASK_THRESHOLD
-        if not (stale_time or stale_sna):
+        last = state["mux_data_seen"][m]
+        if last is not None and (now - last) <= MUX_DATA_STALE_S:
             continue
         if m < 24:
             for k in range(4):
@@ -160,29 +135,9 @@ def effective_readings():
     return bricks, temps
 
 
-def per_module_mia():
-    """Return list of 16 per-module MIA rates (0.0..1.0), based on max of
-    time-decayed voltage-mux SNA rates covering that module's bricks."""
-    result = []
-    for m in range(16):
-        first_brick = m * BRICKS_PER_MODULE
-        last_brick = first_brick + BRICKS_PER_MODULE - 1
-        first_mux = first_brick // 4
-        last_mux = last_brick // 4
-        worst = 0.0
-        for mx in range(first_mux, last_mux + 1):
-            r = current_mux_sna(mx)
-            if r > worst:
-                worst = r
-        result.append(worst)
-    return result
-
-
 def snapshot():
     bricks, temps = effective_readings()
     known = [v for v in bricks if v is not None]
-    mia = per_module_mia()
-    flaky = sum(1 for r in mia if r > 0.30)
     summary = {}
     if known:
         summary = {
@@ -208,9 +163,6 @@ def snapshot():
             "now": time.time(),
             "can_status": state["can_status"],
             "can_error": state["can_error"],
-            "module_mia": mia,
-            "flaky_modules": flaky,
-            "mux_sna_ewma": [round(current_mux_sna(m), 3) for m in range(N_MUX)],
         }
     )
 
