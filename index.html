@@ -66,6 +66,14 @@
   .brick.unknown   { background:#1a1d22; color:#4a5060; }
   .brick.unknown .bar { background:#333; }
 
+  .legend { display:flex; gap:16px; flex-wrap:wrap; align-items:center;
+    margin:-4px 0 14px; font-size:11px; color:#8a94a0; }
+  .legend .sw { display:inline-block; width:18px; height:4px; border-radius:2px;
+    margin-right:5px; vertical-align:middle; }
+  .legend .box { display:inline-block; width:12px; height:12px; border-radius:3px;
+    border:1px solid #ff5555; box-shadow:0 0 4px #ff555555; margin-right:5px;
+    vertical-align:middle; }
+
   @media (max-width:900px) {
     .pack { grid-template-columns:1fr 1fr; }
     .pack .top { grid-column:1 / span 2; }
@@ -92,6 +100,17 @@
   <div class="stat"><b id="frames">–</b><span>Frames</span></div>
   <div class="stat" style="cursor:pointer" onclick="resetRange()"><b>↺</b><span>Reset min/max</span></div>
   <a class="stat" href="/log.csv" download style="text-decoration:none; color:inherit"><b>⤓</b><span>Download CSV</span></a>
+</div>
+
+<div class="legend">
+  <span>Bar under each brick = voltage, scaled 2.5&ndash;4.25 V:</span>
+  <span><span class="sw" style="background:#3fa34d"></span>normal</span>
+  <span><span class="sw" style="background:#e0a030"></span>&gt;30 mV below pack median</span>
+  <span><span class="sw" style="background:#5599ff"></span>&gt;30 mV above</span>
+  <span><span class="sw" style="background:#ff5555"></span>&lt;2.5 V (dead / sense fault)</span>
+  <span><span class="sw" style="background:#444"></span>no data</span>
+  <span><span class="box"></span>module contains a flagged brick</span>
+  <span style="color:#e0a030">NN mV = brick spread since reset</span>
 </div>
 
 <div class="pack" id="pack">
