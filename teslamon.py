@@ -80,11 +80,17 @@ def handle_frame(msg):
                     state["brick_max"][bi] = v
         elif mux < 32:
             for k, raw in enumerate(vals):
+                ti = 4 * (mux - 24) + k
                 if raw == 0x3FFF:
+                    state["temps"][ti] = None
                     continue
                 if raw & 0x2000:
                     raw -= 0x4000
-                state["temps"][4 * (mux - 24) + k] = round(raw * 0.0122, 2)
+                t = round(raw * 0.0122, 2)
+                if t < -50 or t > 120:
+                    state["temps"][ti] = None
+                else:
+                    state["temps"][ti] = t
     elif msg.arbitration_id == 0x302 and len(d) >= 2:
         raw = d[0] + ((d[1] & 0x03) << 8)
         if raw:

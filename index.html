@@ -161,8 +161,8 @@ function render(s) {
   const smin = known.length ? Math.min(...known) : null;
   const smax = known.length ? Math.max(...known) : null;
   const sum  = s.bricks.reduce((a,v) => a + (v != null ? v : 0), 0);
-  const ghost = s.pack_v != null ? (s.pack_v - sum) : null;
-  const knownTemps = s.temps.filter(t => t != null);
+  const ghost = (s.pack_v != null && s.pack_v > 10) ? (s.pack_v - sum) : null;
+  const knownTemps = s.temps.filter(t => t != null && t > -50 && t < 120);
 
   document.getElementById('packv').textContent = s.pack_v != null ? s.pack_v.toFixed(2) : '–';
   document.getElementById('brickv').textContent = sum.toFixed(2);
