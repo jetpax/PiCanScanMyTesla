@@ -170,13 +170,14 @@
     <div class="diag-note">
       Reading unlocks BMS security access for the moment of the read and
       queries each fault routine read-only (0x31 03). It never clears
-      anything. Names are approximate, from an AIDBOX capture.
+      anything. Code names are from the Battery-Emulator TESLA-LEGACY driver.
     </div>
     <button id="dtc-btn" onclick="readDtc()"
       style="margin:8px 0; background:#1d222a; border:1px solid #2a2f38;
       color:#dde3ea; font:inherit; font-size:12px; padding:6px 14px;
       border-radius:6px; cursor:pointer">Read stored faults</button>
     <div id="dtc-body" class="diag-note">not read yet</div>
+    <div id="dtc-ref" class="diag-note" style="margin-top:12px"></div>
   </div>
 </div><!-- /tab-diag -->
 
@@ -384,6 +385,32 @@ function clearFault(routine, name) {
     .catch(e => { document.getElementById('dtc-body').textContent = 'error: ' + e; });
 }
 
+// Meanings from Tesla's Fleet API alert_dictionary (Model S/X 2012-2020).
+// The routine-byte -> code-name mapping is Battery-Emulator's annotation
+// (byte 0x02 is ambiguously f023/f163), so names are best-effort; meanings
+// are Tesla's.
+const FAULT_DESC = {
+  w026: "Contactors disabled until serviced (warning)",
+  f023: "Contactors opened under load by a hardware overcurrent (HWOC counter)",
+  f026: "BMS has disabled the pack contactors until serviced",
+  f107: "Cell voltage sensor inaccurate - BMB / sense-harness / stuck bleed",
+  f152: "Positive contactor welded (won't fully open)",
+  f153: "Negative contactor welded",
+  w161: "Contactor stress above warning threshold (wear estimate)",
+  u029: "Max charge level reduced to ~50% SoC - the range-limiting code",
+  WOT:  "Contactor stress from a wide-open-throttle event (f163 counter)",
+};
+
+function renderRef() {
+  const el = document.getElementById('dtc-ref');
+  el.innerHTML = '<div style="color:#8a94a0;margin-bottom:4px">Code reference '
+    + '(meanings: Tesla alert dictionary; names: Battery-Emulator):</div>'
+    + Object.entries(FAULT_DESC).map(([k, v]) =>
+        `<div><span style="display:inline-block;width:52px;color:#dde3ea">${k}</span>`
+        + `<span style="color:#8a94a0">${v}</span></div>`).join('');
+}
+renderRef();
+
 let lastDtcTs = null;
 function renderDtc(r) {
   const el = document.getElementById('dtc-body');
@@ -406,7 +433,8 @@ function renderDtc(r) {
     const clearBtn = f.active
       ? `<button onclick="clearFault(${f.routine}, '${f.name}')" style="background:#3a1a1a; border:1px solid #ff5555; color:#ffb0b0; font:inherit; font-size:10px; padding:1px 8px; border-radius:4px; cursor:pointer">clear</button>`
       : '';
-    html += `<tr style="color:${col}"><td style="padding-right:16px">${rid}</td>`
+    const desc = FAULT_DESC[f.name] || '';
+    html += `<tr style="color:${col}" title="${desc}"><td style="padding-right:16px">${rid}</td>`
       + `<td style="padding-right:16px">${f.name || ''}</td>`
       + `<td style="padding-right:16px">0x${f.status.toString(16).padStart(2,'0')}</td>`
       + `<td style="padding-right:16px">${f.active ? 'SET' : 'clear'}</td>`
