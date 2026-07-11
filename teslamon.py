@@ -30,8 +30,10 @@ BROADCAST_PERIOD = 1.0
 LOG_PERIOD = 10.0
 LOG_PATH = "/var/log/teslamon.csv"
 CAN_RETRY_PERIOD = 3.0
+MUX_STALE_S = 15.0
 N_BRICKS = 96
 N_TEMPS = 32
+N_MUX = 32
 BRICKS_PER_MODULE = 6
 
 state = {
@@ -39,6 +41,7 @@ state = {
     "temps": [None] * N_TEMPS,
     "brick_min": [None] * N_BRICKS,
     "brick_max": [None] * N_BRICKS,
+    "mux_last_seen": [None] * N_MUX,
     "pack_v": None,
     "pack_a": None,
     "soc": None,
@@ -62,7 +65,15 @@ def handle_frame(msg):
     d = msg.data
     if msg.arbitration_id == 0x6F2 and len(d) == 8:
         mux = d[0]
+        if mux < N_MUX:
+            state["mux_last_seen"][mux] = time.time()
         if d[1:8] == b"\xff" * 7:
+            if mux < 24:
+                for k in range(4):
+                    state["bricks"][4 * mux + k] = None
+            elif mux < 32:
+                for k in range(4):
+                    state["temps"][4 * (mux - 24) + k] = None
             return
         vals = unpack14(d)
         if mux < 24:
@@ -102,8 +113,27 @@ def handle_frame(msg):
         )
 
 
+def effective_readings():
+    """Return (bricks, temps) with stale muxes masked to None."""
+    now = time.time()
+    bricks = list(state["bricks"])
+    temps = list(state["temps"])
+    for m in range(N_MUX):
+        last = state["mux_last_seen"][m]
+        stale = last is None or (now - last) > MUX_STALE_S
+        if not stale:
+            continue
+        if m < 24:
+            for k in range(4):
+                bricks[4 * m + k] = None
+        else:
+            for k in range(4):
+                temps[4 * (m - 24) + k] = None
+    return bricks, temps
+
+
 def snapshot():
-    bricks = state["bricks"]
+    bricks, temps = effective_readings()
     known = [v for v in bricks if v is not None]
     summary = {}
     if known:
@@ -118,7 +148,7 @@ def snapshot():
             "bricks": bricks,
             "brick_min": state["brick_min"],
             "brick_max": state["brick_max"],
-            "temps": state["temps"],
+            "temps": temps,
             "pack_v": state["pack_v"],
             "pack_a": state["pack_a"],
             "soc": state["soc"],
@@ -188,14 +218,15 @@ async def csv_logger():
         w.writerow(header)
     while True:
         await asyncio.sleep(LOG_PERIOD)
+        bricks, temps = effective_readings()
         row = [
             time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
             state["pack_v"],
             state["pack_a"],
             state["soc"],
         ]
-        row += ["" if v is None else v for v in state["bricks"]]
-        row += ["" if v is None else v for v in state["temps"]]
+        row += ["" if v is None else v for v in bricks]
+        row += ["" if v is None else v for v in temps]
         w.writerow(row)
 
 
