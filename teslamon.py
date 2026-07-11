@@ -31,6 +31,7 @@ LOG_PERIOD = 10.0
 LOG_PATH = "/var/log/teslamon.csv"
 CAN_RETRY_PERIOD = 3.0
 MUX_STALE_S = 15.0
+MUX_SNA_MASK_THRESHOLD = 0.4
 N_BRICKS = 96
 N_TEMPS = 32
 N_MUX = 32
@@ -66,21 +67,15 @@ def handle_frame(msg):
     d = msg.data
     if msg.arbitration_id == 0x6F2 and len(d) == 8:
         mux = d[0]
+        is_sna = d[1:8] == b"\xff" * 7
         if mux < N_MUX:
             state["mux_last_seen"][mux] = time.time()
-            is_sna = d[1:8] == b"\xff" * 7
-            alpha = 0.2
+            alpha = 0.3
             state["mux_sna_ewma"][mux] = (
                 alpha * (1.0 if is_sna else 0.0)
                 + (1.0 - alpha) * state["mux_sna_ewma"][mux]
             )
-        if d[1:8] == b"\xff" * 7:
-            if mux < 24:
-                for k in range(4):
-                    state["bricks"][4 * mux + k] = None
-            elif mux < 32:
-                for k in range(4):
-                    state["temps"][4 * (mux - 24) + k] = None
+        if is_sna:
             return
         vals = unpack14(d)
         if mux < 24:
@@ -121,14 +116,17 @@ def handle_frame(msg):
 
 
 def effective_readings():
-    """Return (bricks, temps) with stale muxes masked to None."""
+    """Return (bricks, temps) with muxes masked to None when either the mux
+    hasn't been heard in MUX_STALE_S seconds, or its short-term SNA rate has
+    exceeded MUX_SNA_MASK_THRESHOLD (i.e. multiple SNA frames in a row)."""
     now = time.time()
     bricks = list(state["bricks"])
     temps = list(state["temps"])
     for m in range(N_MUX):
         last = state["mux_last_seen"][m]
-        stale = last is None or (now - last) > MUX_STALE_S
-        if not stale:
+        stale_time = last is None or (now - last) > MUX_STALE_S
+        stale_sna = state["mux_sna_ewma"][m] > MUX_SNA_MASK_THRESHOLD
+        if not (stale_time or stale_sna):
             continue
         if m < 24:
             for k in range(4):
@@ -188,6 +186,7 @@ def snapshot():
             "can_error": state["can_error"],
             "module_mia": mia,
             "flaky_modules": flaky,
+            "mux_sna_ewma": [round(x, 3) for x in state["mux_sna_ewma"]],
         }
     )
 
