@@ -148,12 +148,26 @@
     <h2>BMS status</h2>
     <div class="health">
       <div class="stat"><b id="h-bmsstate">–</b><span>BMS state</span></div>
-      <div class="stat"><b id="h-hvil">–</b><span>HVIL</span></div>
+      <div class="stat" id="hvil-stat"><b id="h-hvil">–</b><span>HVIL on</span></div>
+      <div class="stat"><b id="h-faultcat">–</b><span>Fault cat</span></div>
       <div class="stat"><b id="h-contactor">–</b><span>Contactors</span></div>
       <div class="stat"><b id="h-iso">–</b><span>Isolation kΩ</span></div>
       <div class="stat"><b id="h-vlim">–</b><span>V limits</span></div>
       <div class="stat"><b id="h-bmsrange">–</b><span>BMS min-max V</span></div>
     </div>
+  </div>
+  <div class="diag-section">
+    <h2>Play vehicle</h2>
+    <div class="diag-note">
+      Sends the vehicle-present heartbeats (0x21C/25C/2C8/20E at 100 ms,
+      0x408 at 1 s) that command the BMS out of standby and, with the HVIL
+      loop closed, close the contactors. HV appears at the pack terminals
+      when contactors close - only enable if you understand what is live.
+    </div>
+    <button id="veh-btn" onclick="toggleVehicle()"
+      style="margin:8px 0; background:#1d222a; border:1px solid #2a2f38;
+      color:#dde3ea; font:inherit; font-size:12px; padding:6px 14px;
+      border-radius:6px; cursor:pointer">Play vehicle: OFF</button>
   </div>
   <div class="diag-section">
     <h2>Pack health</h2>
@@ -276,9 +290,17 @@ function render(s) {
   const BMS_STATES = {0:'STANDBY',1:'DRIVE',2:'SUPPORT',3:'CHARGE',4:'FASTCHARGE',
                       5:'CHARGERVOLT',6:'CLEAR_FAULT',7:'FAULT',8:'WELD',15:'SNA'};
   document.getElementById('h-iso').textContent = h.iso_kohm != null ? h.iso_kohm : '–';
-  document.getElementById('h-hvil').textContent = h.hvil_on != null ? (h.hvil_on ? 'ok' : 'open') : '–';
+  document.getElementById('h-hvil').textContent = h.hvil_on != null ? (h.hvil_on ? 'CLOSED' : 'open') : '–';
+  document.getElementById('hvil-stat').classList.toggle('warn', h.hvil_on === false);
+  document.getElementById('h-faultcat').textContent = h.fault_cat != null ? h.fault_cat : '–';
   document.getElementById('h-bmsstate').textContent =
     h.bms_state != null ? (BMS_STATES[h.bms_state] || h.bms_state) : '–';
+  const vb = document.getElementById('veh-btn');
+  if (vb) {
+    vb.textContent = 'Play vehicle: ' + (s.vehicle ? 'ON' : 'OFF');
+    vb.style.borderColor = s.vehicle ? '#ff9040' : '#2a2f38';
+    vb.style.color = s.vehicle ? '#ff9040' : '#dde3ea';
+  }
   document.getElementById('h-contactor').textContent = h.contactor != null ? h.contactor : '–';
   document.getElementById('h-vlim').textContent =
     (h.vmin_limit != null && h.vmax_limit != null) ? `${h.vmin_limit}-${h.vmax_limit}` : '–';
@@ -454,6 +476,16 @@ function readDtc() {
     .then(renderDtc)
     .catch(e => { document.getElementById('dtc-body').textContent = 'error: ' + e; })
     .finally(() => { btn.disabled = false; btn.textContent = 'Read stored faults'; });
+}
+
+let vehicleOn = false;
+function toggleVehicle() {
+  vehicleOn = !vehicleOn;
+  fetch('/vehicle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ on: vehicleOn }),
+  });
 }
 
 function showTab(name) {

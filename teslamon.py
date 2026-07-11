@@ -65,6 +65,7 @@ state = {
     "can_status": "starting",
     "can_error": None,
     "health": {},
+    "vehicle": False,
 }
 brick_last_event = [None] * N_BRICKS
 clients = set()
@@ -136,6 +137,8 @@ def handle_frame(msg):
     elif msg.arbitration_id == 0x212 and len(d) >= 4:
         h = state["health"]
         h["hvil_on"] = bool((d[1] >> 3) & 1)
+        h["hvil_status"] = bool((d[0] >> 6) & 1)
+        h["fault_cat"] = d[1] & 0x07
         h["bms_state"] = (d[2] >> 4) & 0x0F
         h["contactor"] = d[2] & 0x0F
         h["iso_kohm"] = None if d[3] == 0xFF else d[3] * 20
@@ -239,6 +242,7 @@ def snapshot():
                 if ts is not None and time.time() - ts < BAL_ACTIVE_S
             ],
             "dtc": state.get("dtc"),
+            "vehicle": state["vehicle"],
         }
     )
 
@@ -365,6 +369,39 @@ async def keepalive_loop(bus):
         await asyncio.sleep(KEEPALIVE_PERIOD)
 
 
+# Vehicle-present heartbeats from Battery-Emulator TESLA-LEGACY driver.
+# Sending these commands the BMS to leave STANDBY/FAULT and close contactors.
+VEHICLE_FRAMES = [
+    (0x21C, [0x31, 0x58, 0x20, 0x89, 0x8C, 0x08, 0x03, 0x08]),
+    (0x25C, [0x00, 0x02, 0x2A, 0x09, 0x40, 0xC7, 0x72, 0x81]),
+    (0x2C8, [0x6F, 0xE8, 0x13, 0x71, 0x1D, 0x24, 0x80, 0x7B]),
+    (0x20E, [0x05, 0x56, 0x22, 0x00, 0xC3, 0x00, 0x02, 0x08]),
+]
+
+
+async def vehicle_loop(bus):
+    msgs = [
+        can.Message(arbitration_id=i, data=d, is_extended_id=False)
+        for i, d in VEHICLE_FRAMES
+    ]
+    ka408 = can.Message(arbitration_id=0x408, data=[0], is_extended_id=False)
+    ticks = 0
+    while True:
+        if state["vehicle"]:
+            for m in msgs:
+                try:
+                    bus.send(m)
+                except can.CanError:
+                    pass
+            if ticks % 10 == 0:
+                try:
+                    bus.send(ka408)
+                except can.CanError:
+                    pass
+        ticks += 1
+        await asyncio.sleep(0.1)
+
+
 async def can_lifecycle():
     while True:
         try:
@@ -381,15 +418,17 @@ async def can_lifecycle():
             bus, [reader], loop=asyncio.get_running_loop()
         )
         ka = asyncio.create_task(keepalive_loop(bus))
+        veh = asyncio.create_task(vehicle_loop(bus))
         try:
             async for msg in reader:
                 handle_frame(msg)
         finally:
-            ka.cancel()
-            try:
-                await ka
-            except asyncio.CancelledError:
-                pass
+            for t in (ka, veh):
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
             notifier.stop()
             bus.shutdown()
         state["can_status"] = "no_adapter"
@@ -434,6 +473,12 @@ async def resetter(request):
         state["mux_data_seen"][i] = None
     state["frame_count"] = 0
     return web.Response(text="monitor restarted\n")
+
+
+async def vehicle_handler(request):
+    body = await request.json()
+    state["vehicle"] = bool(body.get("on"))
+    return web.json_response({"vehicle": state["vehicle"]})
 
 
 dtc_lock = asyncio.Lock()
@@ -519,6 +564,7 @@ async def main():
     app.router.add_post("/reset", resetter)
     app.router.add_post("/readdtc", readdtc_handler)
     app.router.add_post("/clearfault", clearfault_handler)
+    app.router.add_post("/vehicle", vehicle_handler)
     app.router.add_get("/log.csv", csv_handler)
     runner = web.AppRunner(app)
     await runner.setup()
