@@ -130,7 +130,7 @@ def handle_frame(msg):
         )
     elif msg.arbitration_id == 0x212 and len(d) >= 4:
         h = state["health"]
-        h["hvil_open"] = bool((d[0] >> 6) & 1)
+        h["hvil_on"] = bool((d[1] >> 3) & 1)
         h["bms_state"] = (d[2] >> 4) & 0x0F
         h["contactor"] = d[2] & 0x0F
         h["iso_kohm"] = None if d[3] == 0xFF else d[3] * 20
