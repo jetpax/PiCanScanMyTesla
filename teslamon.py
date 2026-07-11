@@ -42,6 +42,7 @@ state = {
     "brick_min": [None] * N_BRICKS,
     "brick_max": [None] * N_BRICKS,
     "mux_last_seen": [None] * N_MUX,
+    "mux_sna_ewma": [0.0] * N_MUX,
     "pack_v": None,
     "pack_a": None,
     "soc": None,
@@ -67,6 +68,12 @@ def handle_frame(msg):
         mux = d[0]
         if mux < N_MUX:
             state["mux_last_seen"][mux] = time.time()
+            is_sna = d[1:8] == b"\xff" * 7
+            alpha = 0.2
+            state["mux_sna_ewma"][mux] = (
+                alpha * (1.0 if is_sna else 0.0)
+                + (1.0 - alpha) * state["mux_sna_ewma"][mux]
+            )
         if d[1:8] == b"\xff" * 7:
             if mux < 24:
                 for k in range(4):
@@ -132,9 +139,28 @@ def effective_readings():
     return bricks, temps
 
 
+def per_module_mia():
+    """Return list of 16 per-module MIA rates (0.0..1.0), based on max of
+    voltage-mux SNA EWMAs covering that module's bricks."""
+    result = []
+    for m in range(16):
+        first_brick = m * BRICKS_PER_MODULE
+        last_brick = first_brick + BRICKS_PER_MODULE - 1
+        first_mux = first_brick // 4
+        last_mux = last_brick // 4
+        worst = 0.0
+        for mx in range(first_mux, last_mux + 1):
+            if state["mux_sna_ewma"][mx] > worst:
+                worst = state["mux_sna_ewma"][mx]
+        result.append(worst)
+    return result
+
+
 def snapshot():
     bricks, temps = effective_readings()
     known = [v for v in bricks if v is not None]
+    mia = per_module_mia()
+    flaky = sum(1 for r in mia if r > 0.05)
     summary = {}
     if known:
         summary = {
@@ -160,6 +186,8 @@ def snapshot():
             "now": time.time(),
             "can_status": state["can_status"],
             "can_error": state["can_error"],
+            "module_mia": mia,
+            "flaky_modules": flaky,
         }
     )
 
