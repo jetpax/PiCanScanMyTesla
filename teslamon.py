@@ -54,8 +54,10 @@ state = {
     "health": {},
 }
 events = collections.deque(maxlen=1000)
+brick_last_event = [None] * N_BRICKS
 clients = set()
 EXCURSION_MV = 15.0
+BAL_ACTIVE_S = 90.0
 
 
 def unpack14(data):
@@ -88,6 +90,7 @@ def handle_frame(msg):
                 v = round(raw * 0.000305, 4)
                 prev = state["bricks"][bi]
                 if prev is not None and abs(v - prev) * 1000 > EXCURSION_MV:
+                    brick_last_event[bi] = time.time()
                     events.append(
                         {
                             "ts": round(time.time(), 3),
@@ -229,6 +232,11 @@ def snapshot():
             "can_error": state["can_error"],
             "health": state["health"],
             "events": list(events)[-50:][::-1],
+            "bal_active": [
+                i + 1
+                for i, ts in enumerate(brick_last_event)
+                if ts is not None and time.time() - ts < BAL_ACTIVE_S
+            ],
         }
     )
 
