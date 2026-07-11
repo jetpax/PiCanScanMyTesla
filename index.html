@@ -11,6 +11,12 @@
   #status { color:#8a94a0; font-size:11px; margin-bottom:12px; }
   #status.stale { color:#ff5555; }
 
+  #banner { display:none; background:#5a1414; border:1px solid #ff5555; color:#ffdcdc;
+    padding:10px 14px; border-radius:8px; margin:8px 0 14px; font-size:13px;
+    font-weight:500; }
+  #banner.on { display:block; }
+  #banner .hint { color:#ffb0b0; font-weight:400; margin-top:4px; font-size:12px; }
+
   .stats { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:14px; }
   .stat { background:#1d222a; border:1px solid #2a2f38; border-radius:8px; padding:6px 12px; min-width:64px; }
   .stat b { display:block; font-size:18px; font-weight:600; }
@@ -69,8 +75,9 @@
 </style>
 </head>
 <body>
-<h1>Tesla Model S 85/90 — bench pack</h1>
-<div id="status">connecting…</div>
+<h1>Tesla Model S 85/90 - bench pack</h1>
+<div id="banner"></div>
+<div id="status">connecting...</div>
 
 <div class="stats">
   <div class="stat"><b id="packv">–</b><span>Pack V</span></div>
@@ -171,11 +178,31 @@ function render(s) {
   document.getElementById('tmax').textContent = knownTemps.length ? Math.max(...knownTemps).toFixed(1) : '–';
   document.getElementById('frames').textContent = s.frame_count;
 
+  const banner = document.getElementById('banner');
+  if (s.can_status && s.can_status !== 'ok') {
+    banner.classList.add('on');
+    const msg = s.can_status === 'no_adapter'
+      ? 'CAN adapter not detected. Plug in your USB-CAN adapter and it will pick up automatically.'
+      : `CAN error (${s.can_status}). Check the adapter and slcand service.`;
+    const hint = s.can_error ? `<div class="hint">${s.can_error}</div>` : '';
+    banner.innerHTML = msg + hint;
+  } else {
+    banner.classList.remove('on');
+    banner.innerHTML = '';
+  }
+
   const stale = !s.last_rx || (s.now - s.last_rx) > 5;
   const st = document.getElementById('status');
-  st.textContent = stale ? 'NO CAN DATA — BMS asleep or bus down' :
-    `live — ${new Date().toLocaleTimeString()} — ${known.length}/96 bricks, ${knownTemps.length}/32 temps`;
-  st.className = stale ? 'stale' : '';
+  if (s.can_status && s.can_status !== 'ok') {
+    st.textContent = 'Waiting for CAN adapter...';
+    st.className = 'stale';
+  } else if (stale) {
+    st.textContent = 'NO CAN DATA - BMS asleep or bus down';
+    st.className = 'stale';
+  } else {
+    st.textContent = `live - ${new Date().toLocaleTimeString()} - ${known.length}/96 bricks, ${knownTemps.length}/32 temps`;
+    st.className = '';
+  }
 
   const vLoRef = med != null ? med - V_LOW_MV / 1000 : null;
   const vHiRef = med != null ? med + V_HIGH_MV / 1000 : null;
@@ -244,7 +271,7 @@ function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = e => render(JSON.parse(e.data));
   ws.onclose = () => {
-    document.getElementById('status').textContent = 'disconnected — retrying…';
+    document.getElementById('status').textContent = 'disconnected, retrying...';
     setTimeout(connect, 2000);
   };
 }

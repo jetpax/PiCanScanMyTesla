@@ -1,12 +1,13 @@
 [Unit]
 Description=canlogserver for SavvyCAN on port 28700
 After=slcand.service
-Requires=slcand.service
+Wants=slcand.service
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/bin/canlogserver can0
 Restart=always
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

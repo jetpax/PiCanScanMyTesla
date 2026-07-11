@@ -1,15 +1,15 @@
 [Unit]
 Description=slcand bringing up can0 at 500 kbit/s
-After=dev-ttyACM0.device
-Requires=dev-ttyACM0.device
+StartLimitIntervalSec=0
 
 [Service]
 Type=forking
+ExecStartPre=/bin/sh -c 'test -e /dev/ttyACM0'
 ExecStart=/usr/bin/slcand -o -s6 /dev/ttyACM0 can0
 ExecStartPost=/bin/sleep 1
 ExecStartPost=/usr/sbin/ip link set can0 up
 Restart=always
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

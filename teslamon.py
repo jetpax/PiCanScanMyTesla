@@ -29,6 +29,7 @@ KEEPALIVE_ID = 0x555
 BROADCAST_PERIOD = 1.0
 LOG_PERIOD = 10.0
 LOG_PATH = "/var/log/teslamon.csv"
+CAN_RETRY_PERIOD = 3.0
 N_BRICKS = 96
 N_TEMPS = 32
 BRICKS_PER_MODULE = 6
@@ -44,6 +45,8 @@ state = {
     "frame_count": 0,
     "last_rx": None,
     "started": time.time(),
+    "can_status": "starting",
+    "can_error": None,
 }
 clients = set()
 
@@ -119,21 +122,13 @@ def snapshot():
             "summary": summary,
             "since": state["started"],
             "now": time.time(),
+            "can_status": state["can_status"],
+            "can_error": state["can_error"],
         }
     )
 
 
-async def can_reader(bus):
-    reader = can.AsyncBufferedReader()
-    notifier = can.Notifier(bus, [reader], loop=asyncio.get_running_loop())
-    try:
-        async for msg in reader:
-            handle_frame(msg)
-    finally:
-        notifier.stop()
-
-
-async def keepalive(bus):
+async def keepalive_loop(bus):
     msg = can.Message(
         arbitration_id=KEEPALIVE_ID, data=[0], is_extended_id=False
     )
@@ -143,6 +138,37 @@ async def keepalive(bus):
         except can.CanError:
             pass
         await asyncio.sleep(KEEPALIVE_PERIOD)
+
+
+async def can_lifecycle():
+    while True:
+        try:
+            bus = can.Bus(channel=CAN_IFACE, interface="socketcan")
+        except OSError as e:
+            state["can_status"] = "no_adapter"
+            state["can_error"] = str(e)
+            await asyncio.sleep(CAN_RETRY_PERIOD)
+            continue
+        state["can_status"] = "ok"
+        state["can_error"] = None
+        reader = can.AsyncBufferedReader()
+        notifier = can.Notifier(
+            bus, [reader], loop=asyncio.get_running_loop()
+        )
+        ka = asyncio.create_task(keepalive_loop(bus))
+        try:
+            async for msg in reader:
+                handle_frame(msg)
+        finally:
+            ka.cancel()
+            try:
+                await ka
+            except asyncio.CancelledError:
+                pass
+            notifier.stop()
+            bus.shutdown()
+        state["can_status"] = "no_adapter"
+        await asyncio.sleep(CAN_RETRY_PERIOD)
 
 
 async def csv_logger():
@@ -219,7 +245,6 @@ async def index_handler(request):
 
 
 async def main():
-    bus = can.Bus(channel=CAN_IFACE, interface="socketcan")
     app = web.Application()
     app.router.add_get("/", index_handler)
     app.router.add_get("/ws", ws_handler)
@@ -230,9 +255,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
     await site.start()
-    await asyncio.gather(
-        can_reader(bus), keepalive(bus), broadcaster(), csv_logger()
-    )
+    await asyncio.gather(can_lifecycle(), broadcaster(), csv_logger())
 
 
 if __name__ == "__main__":

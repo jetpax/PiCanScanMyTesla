@@ -1,7 +1,6 @@
 [Unit]
 Description=PiCanScanMyTesla dashboard
-After=slcand.service
-Requires=slcand.service
+After=network-online.target
 
 [Service]
 ExecStart=/usr/bin/python3 /opt/teslamon/teslamon.py
