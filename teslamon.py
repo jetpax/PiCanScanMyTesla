@@ -67,33 +67,34 @@ def handle_frame(msg):
     d = msg.data
     if msg.arbitration_id == 0x6F2 and len(d) == 8:
         mux = d[0]
-        is_sna = d[1:8] == b"\xff" * 7
-        if mux < N_MUX:
-            state["mux_last_seen"][mux] = time.time()
-            alpha = 0.3
-            state["mux_sna_ewma"][mux] = (
-                alpha * (1.0 if is_sna else 0.0)
-                + (1.0 - alpha) * state["mux_sna_ewma"][mux]
-            )
-        if is_sna:
+        if mux >= N_MUX:
             return
-        vals = unpack14(d)
+        state["mux_last_seen"][mux] = time.time()
+        is_all_ff = d[1:8] == b"\xff" * 7
+        vals = None if is_all_ff else unpack14(d)
+        is_sna = is_all_ff
         if mux < 24:
-            for k, raw in enumerate(vals):
-                if raw in (0, 0x3FFF):
-                    continue
-                bi = 4 * mux + k
-                v = round(raw * 0.000305, 4)
-                state["bricks"][bi] = v
-                lo = state["brick_min"][bi]
-                hi = state["brick_max"][bi]
-                if lo is None or v < lo:
-                    state["brick_min"][bi] = v
-                if hi is None or v > hi:
-                    state["brick_max"][bi] = v
-        elif mux < 32:
-            for k, raw in enumerate(vals):
+            if not is_all_ff:
+                for k, raw in enumerate(vals):
+                    if raw in (0, 0x3FFF):
+                        continue
+                    bi = 4 * mux + k
+                    v = round(raw * 0.000305, 4)
+                    state["bricks"][bi] = v
+                    lo = state["brick_min"][bi]
+                    hi = state["brick_max"][bi]
+                    if lo is None or v < lo:
+                        state["brick_min"][bi] = v
+                    if hi is None or v > hi:
+                        state["brick_max"][bi] = v
+        else:
+            valid_count = 0
+            for k in range(4):
                 ti = 4 * (mux - 24) + k
+                if is_all_ff:
+                    state["temps"][ti] = None
+                    continue
+                raw = vals[k]
                 if raw == 0x3FFF:
                     state["temps"][ti] = None
                     continue
@@ -104,6 +105,14 @@ def handle_frame(msg):
                     state["temps"][ti] = None
                 else:
                     state["temps"][ti] = t
+                    valid_count += 1
+            if not is_all_ff and valid_count == 0:
+                is_sna = True
+        alpha = 0.3
+        state["mux_sna_ewma"][mux] = (
+            alpha * (1.0 if is_sna else 0.0)
+            + (1.0 - alpha) * state["mux_sna_ewma"][mux]
+        )
     elif msg.arbitration_id == 0x302 and len(d) >= 2:
         raw = d[0] + ((d[1] & 0x03) << 8)
         if raw:
@@ -113,6 +122,20 @@ def handle_frame(msg):
         state["pack_a"] = round(
             int.from_bytes(d[2:4], "little", signed=True) * 0.1, 1
         )
+
+
+def current_mux_sna(mux):
+    """SNA rate for a mux with time-decay applied. If a mux stops firing, its
+    stored EWMA no longer reflects current state, so decay it toward zero
+    after a grace period."""
+    ewma = state["mux_sna_ewma"][mux]
+    last = state["mux_last_seen"][mux]
+    if last is None:
+        return 0.0
+    dt = time.time() - last
+    if dt <= 5.0:
+        return ewma
+    return ewma * (0.5 ** ((dt - 5.0) / 15.0))
 
 
 def effective_readings():
@@ -125,7 +148,7 @@ def effective_readings():
     for m in range(N_MUX):
         last = state["mux_last_seen"][m]
         stale_time = last is None or (now - last) > MUX_STALE_S
-        stale_sna = state["mux_sna_ewma"][m] > MUX_SNA_MASK_THRESHOLD
+        stale_sna = current_mux_sna(m) > MUX_SNA_MASK_THRESHOLD
         if not (stale_time or stale_sna):
             continue
         if m < 24:
@@ -139,7 +162,7 @@ def effective_readings():
 
 def per_module_mia():
     """Return list of 16 per-module MIA rates (0.0..1.0), based on max of
-    voltage-mux SNA EWMAs covering that module's bricks."""
+    time-decayed voltage-mux SNA rates covering that module's bricks."""
     result = []
     for m in range(16):
         first_brick = m * BRICKS_PER_MODULE
@@ -148,8 +171,9 @@ def per_module_mia():
         last_mux = last_brick // 4
         worst = 0.0
         for mx in range(first_mux, last_mux + 1):
-            if state["mux_sna_ewma"][mx] > worst:
-                worst = state["mux_sna_ewma"][mx]
+            r = current_mux_sna(mx)
+            if r > worst:
+                worst = r
         result.append(worst)
     return result
 
@@ -158,7 +182,7 @@ def snapshot():
     bricks, temps = effective_readings()
     known = [v for v in bricks if v is not None]
     mia = per_module_mia()
-    flaky = sum(1 for r in mia if r > 0.05)
+    flaky = sum(1 for r in mia if r > 0.30)
     summary = {}
     if known:
         summary = {
@@ -186,7 +210,7 @@ def snapshot():
             "can_error": state["can_error"],
             "module_mia": mia,
             "flaky_modules": flaky,
-            "mux_sna_ewma": [round(x, 3) for x in state["mux_sna_ewma"]],
+            "mux_sna_ewma": [round(current_mux_sna(m), 3) for m in range(N_MUX)],
         }
     )
 

@@ -259,9 +259,9 @@ function render(s) {
       modKnown ? `${modSum.toFixed(2)} V` : '';
     const miaEl = document.getElementById('mmia' + m);
     const miaRate = (s.module_mia && s.module_mia[m - 1]) || 0;
-    if (miaRate > 0.02) {
+    if (miaRate > 0.20) {
       miaEl.textContent = `MIA ${Math.round(miaRate * 100)}%`;
-      miaEl.className = miaRate > 0.30 ? 'mmia hot' : 'mmia';
+      miaEl.className = miaRate > 0.50 ? 'mmia hot' : 'mmia';
       modBad = true;
     } else {
       miaEl.textContent = '';
