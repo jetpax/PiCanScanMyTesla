@@ -37,6 +37,7 @@
 
   .module { background:#1d222a; border:1px solid #2a2f38; border-radius:6px; padding:6px 8px; position:relative; }
   .module.bad { border-color:#ff5555; box-shadow:0 0 8px #ff555555; }
+  .module.wob { border-color:#ff7ab8; box-shadow:0 0 8px #ff7ab855; }
   .module .head {
     display:flex; justify-content:space-between; align-items:baseline;
     font-size:11px; color:#8a94a0; margin-bottom:4px; padding-bottom:3px;
@@ -59,10 +60,11 @@
   .brick .bn { color:#8a94a0; font-size:9px; }
   .brick .bv { color:#dde3ea; font-weight:600; }
   .brick .br { color:#8a94a0; font-size:9px; }
-  .brick .br.wide { color:#e0a030; font-weight:600; }
+  .brick .br.wide { color:#ff7ab8; font-weight:600; }
   .brick.low       { background:#3a2e1a; } .brick.low .bar    { background:#e0a030; }
   .brick.dead      { background:#3a1a1a; } .brick.dead .bar   { background:#ff5555; }
   .brick.high      { background:#1a2a3a; } .brick.high .bar   { background:#5599ff; }
+  .brick.wobble    { background:#382030; } .brick.wobble .bar { background:#ff7ab8; }
   .brick.unknown   { background:#1a1d22; color:#4a5060; }
   .brick.unknown .bar { background:#333; }
 
@@ -109,8 +111,10 @@
   <span><span class="sw" style="background:#5599ff"></span>&gt;30 mV above</span>
   <span><span class="sw" style="background:#ff5555"></span>&lt;2.5 V (dead / sense fault)</span>
   <span><span class="sw" style="background:#444"></span>no data</span>
-  <span><span class="box"></span>module contains a flagged brick</span>
-  <span style="color:#e0a030">NN mV = brick spread since reset</span>
+  <span><span class="sw" style="background:#ff7ab8"></span>wobbled &gt;20 mV since reset (persists)</span>
+  <span><span class="box"></span>module has live fault</span>
+  <span><span class="box" style="border-color:#ff7ab8; box-shadow:0 0 4px #ff7ab855"></span>module has wobbled brick</span>
+  <span style="color:#ff7ab8">NN mV = brick spread since reset</span>
 </div>
 
 <div class="pack" id="pack">
@@ -228,7 +232,7 @@ function render(s) {
 
   for (let m = 1; m <= NMOD; m++) {
     const modEl = document.getElementById('mod' + m);
-    let modSum = 0, modBad = false, modKnown = 0;
+    let modSum = 0, modBad = false, modWob = false, modKnown = 0;
     for (let b = 0; b < BPM; b++) {
       const bi = (m - 1) * BPM + b;
       const v = s.bricks[bi];
@@ -246,19 +250,22 @@ function render(s) {
       // bar shows fraction of range [2.5, 4.25]
       const frac = Math.max(0.02, Math.min(1, (v - 2.5) / (4.25 - 2.5)));
       bar.style.width = (frac * 100).toFixed(1) + '%';
+      const lo = s.brick_min && s.brick_min[bi];
+      const hi = s.brick_max && s.brick_max[bi];
+      const spread = (lo != null && hi != null) ? Math.round((hi - lo) * 1000) : null;
+      const wobbled = spread != null && spread > 20;
       let cls = 'brick';
       if (v < DEAD_V)                       { cls += ' dead'; modBad = true; }
       else if (v < V_ABS_MIN)               { cls += ' dead'; modBad = true; }
       else if (vLoRef != null && v < vLoRef){ cls += ' low';  modBad = true; }
       else if (vHiRef != null && v > vHiRef){ cls += ' high'; }
+      else if (wobbled)                     { cls += ' wobble'; }
+      if (wobbled) modWob = true;
       el.className = cls;
-      const lo = s.brick_min && s.brick_min[bi];
-      const hi = s.brick_max && s.brick_max[bi];
       const rangeEl = document.getElementById('br' + bi);
-      if (lo != null && hi != null) {
-        const spread = Math.round((hi - lo) * 1000);
+      if (spread != null) {
         rangeEl.textContent = spread > 0 ? `${spread}mV` : '';
-        rangeEl.className = spread > 20 ? 'br wide' : 'br';
+        rangeEl.className = wobbled ? 'br wide' : 'br';
         el.title = `Brick ${bi + 1} (module ${m}, position ${b + 1})\n`
           + `now:  ${v.toFixed(4)} V\n`
           + `min:  ${lo.toFixed(4)} V\n`
@@ -278,6 +285,7 @@ function render(s) {
         ? `${t1 != null ? t1.toFixed(1) : '?'} / ${t2 != null ? t2.toFixed(1) : '?'} °C`
         : '';
     modEl.classList.toggle('bad', modBad);
+    modEl.classList.toggle('wob', modWob && !modBad);
   }
 }
 
