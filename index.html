@@ -70,15 +70,16 @@
 
   .health { display:flex; gap:14px; flex-wrap:wrap; margin:0 0 14px; }
   .health .stat b { font-size:15px; }
+  .diag-section h2 { font-size:13px; color:#8a94a0; margin:18px 0 8px; font-weight:600; }
+  .diag-note { font-size:12px; color:#8a94a0; max-width:760px; line-height:1.5; }
 
-  .events { max-width:1400px; margin-top:16px; }
-  .events h2 { font-size:13px; color:#8a94a0; margin:0 0 6px; font-weight:600; }
-  .events table { border-collapse:collapse; font-size:11px; font-variant-numeric:tabular-nums; }
-  .events td, .events th { padding:2px 12px 2px 0; text-align:left; color:#dde3ea; }
-  .events th { color:#8a94a0; font-weight:400; }
-  .events td.neg { color:#e0a030; }
-  .events td.pos { color:#5599ff; }
-  .events .empty { color:#4a5060; font-size:11px; }
+  .tabs { display:flex; gap:4px; margin:0 0 14px; border-bottom:1px solid #2a2f38; }
+  .tabs button { background:none; border:none; color:#8a94a0; font:inherit;
+    font-size:13px; padding:8px 16px; cursor:pointer; border-bottom:2px solid transparent;
+    margin-bottom:-1px; }
+  .tabs button.active { color:#dde3ea; border-bottom-color:#5599ff; }
+  .tabpage { display:none; }
+  .tabpage.active { display:block; }
 
   .legend { display:flex; gap:16px; flex-wrap:wrap; align-items:center;
     margin:-4px 0 14px; font-size:11px; color:#8a94a0; }
@@ -101,6 +102,12 @@
 <div id="banner"></div>
 <div id="status">connecting...</div>
 
+<div class="tabs">
+  <button id="tabbtn-pack" class="active" onclick="showTab('pack')">Pack</button>
+  <button id="tabbtn-diag" onclick="showTab('diag')">Diagnostics</button>
+</div>
+
+<div id="tab-pack" class="tabpage active">
 <div class="stats">
   <div class="stat"><b id="packv">–</b><span>Pack V</span></div>
   <div class="stat"><b id="brickv">–</b><span>Σ bricks V</span></div>
@@ -114,20 +121,6 @@
   <div class="stat"><b id="frames">–</b><span>Frames</span></div>
   <div class="stat" style="cursor:pointer" onclick="resetRange()"><b>↺</b><span>Reset min/max</span></div>
   <a class="stat" href="/log.csv" download style="text-decoration:none; color:inherit"><b>⤓</b><span>Download CSV</span></a>
-</div>
-
-<div class="health">
-  <div class="stat"><b id="h-iso">–</b><span>Isolation kΩ</span></div>
-  <div class="stat"><b id="h-hvil">–</b><span>HVIL</span></div>
-  <div class="stat"><b id="h-bmsstate">–</b><span>BMS state</span></div>
-  <div class="stat"><b id="h-contactor">–</b><span>Contactors</span></div>
-  <div class="stat"><b id="h-vlim">–</b><span>V limits</span></div>
-  <div class="stat"><b id="h-nomfull">–</b><span>Nom full kWh</span></div>
-  <div class="stat"><b id="h-nomrem">–</b><span>Remaining kWh</span></div>
-  <div class="stat"><b id="h-lifedis">–</b><span>Life out kWh</span></div>
-  <div class="stat"><b id="h-lifechg">–</b><span>Life in kWh</span></div>
-  <div class="stat"><b id="h-odo">–</b><span>Odometer mi</span></div>
-  <div class="stat"><b id="h-bmsrange">–</b><span>BMS min-max V</span></div>
 </div>
 
 <div class="legend">
@@ -148,11 +141,44 @@
   <div class="side left"  id="leftCol"></div>
   <div class="side right" id="rightCol"></div>
 </div>
+</div><!-- /tab-pack -->
 
-<div class="events">
-  <h2>Excursion log (steps &gt;15 mV between consecutive readings)</h2>
-  <div id="eventlist" class="empty">none yet</div>
-</div>
+<div id="tab-diag" class="tabpage">
+  <div class="diag-section">
+    <h2>BMS status</h2>
+    <div class="health">
+      <div class="stat"><b id="h-bmsstate">–</b><span>BMS state</span></div>
+      <div class="stat"><b id="h-hvil">–</b><span>HVIL</span></div>
+      <div class="stat"><b id="h-contactor">–</b><span>Contactors</span></div>
+      <div class="stat"><b id="h-iso">–</b><span>Isolation kΩ</span></div>
+      <div class="stat"><b id="h-vlim">–</b><span>V limits</span></div>
+      <div class="stat"><b id="h-bmsrange">–</b><span>BMS min-max V</span></div>
+    </div>
+  </div>
+  <div class="diag-section">
+    <h2>Pack health</h2>
+    <div class="health">
+      <div class="stat"><b id="h-nomfull">–</b><span>Nom full kWh</span></div>
+      <div class="stat"><b id="h-nomrem">–</b><span>Remaining kWh</span></div>
+      <div class="stat"><b id="h-lifechg">–</b><span>Life in kWh</span></div>
+      <div class="stat"><b id="h-lifedis">–</b><span>Life out kWh</span></div>
+      <div class="stat"><b id="h-odo">–</b><span>Odometer mi</span></div>
+    </div>
+  </div>
+  <div class="diag-section">
+    <h2>Stored fault codes (DTCs)</h2>
+    <div class="diag-note">
+      Reading unlocks BMS security access for the moment of the read and
+      queries each fault routine read-only (0x31 03). It never clears
+      anything. Names are approximate, from an AIDBOX capture.
+    </div>
+    <button id="dtc-btn" onclick="readDtc()"
+      style="margin:8px 0; background:#1d222a; border:1px solid #2a2f38;
+      color:#dde3ea; font:inherit; font-size:12px; padding:6px 14px;
+      border-radius:6px; cursor:pointer">Read stored faults</button>
+    <div id="dtc-body" class="diag-note">not read yet</div>
+  </div>
+</div><!-- /tab-diag -->
 
 <script>
 const NMOD = 16, BPM = 6;
@@ -263,24 +289,6 @@ function render(s) {
   document.getElementById('h-bmsrange').textContent =
     (h.bms_brick_min != null && h.bms_brick_max != null) ? `${h.bms_brick_min}-${h.bms_brick_max}` : '–';
 
-  const ev = s.events || [];
-  const evEl = document.getElementById('eventlist');
-  if (ev.length === 0) {
-    evEl.className = 'empty';
-    evEl.textContent = 'none yet';
-  } else {
-    evEl.className = '';
-    evEl.innerHTML = '<table><tr><th>time</th><th>brick</th><th>module</th><th>step</th><th>from</th><th>to</th></tr>'
-      + ev.map(e => {
-          const t = new Date(e.ts * 1000).toLocaleTimeString();
-          const cls = e.delta_mv < 0 ? 'neg' : 'pos';
-          return `<tr><td>${t}</td><td>${e.brick}</td><td>${e.module}</td>`
-            + `<td class="${cls}">${e.delta_mv > 0 ? '+' : ''}${e.delta_mv} mV</td>`
-            + `<td>${e.from_v.toFixed(3)}</td><td>${e.to_v.toFixed(3)}</td></tr>`;
-        }).join('')
-      + '</table>';
-  }
-
   const stale = !s.last_rx || (s.now - s.last_rx) > 5;
   const st = document.getElementById('status');
   if (s.can_status && s.can_status !== 'ok') {
@@ -297,6 +305,11 @@ function render(s) {
   const vLoRef = med != null ? med - V_LOW_MV / 1000 : null;
   const vHiRef = med != null ? med + V_HIGH_MV / 1000 : null;
   const balSet = new Set(s.bal_active || []);
+
+  if (s.dtc && s.dtc.ts !== lastDtcTs) {
+    lastDtcTs = s.dtc.ts;
+    renderDtc(s.dtc);
+  }
 
   for (let m = 1; m <= NMOD; m++) {
     const modEl = document.getElementById('mod' + m);
@@ -359,6 +372,52 @@ function render(s) {
 
 function resetRange() {
   fetch('/reset', { method: 'POST' });
+}
+
+let lastDtcTs = null;
+function renderDtc(r) {
+  const el = document.getElementById('dtc-body');
+  if (!r) { el.textContent = 'not read yet'; return; }
+  if (!r.ok) { el.textContent = 'read failed: ' + (r.error || 'unknown'); return; }
+  const when = new Date(r.ts * 1000).toLocaleTimeString();
+  const faults = r.faults || [];
+  const active = faults.filter(f => f.active);
+  let html = `<div style="margin-bottom:6px">read ${when} - `
+    + `${active.length} set, ${faults.length - active.length} clear</div>`;
+  html += '<table style="border-collapse:collapse; font-size:11px; font-variant-numeric:tabular-nums">'
+    + '<tr style="color:#8a94a0"><th style="text-align:left;padding-right:16px">routine</th>'
+    + '<th style="text-align:left;padding-right:16px">name</th>'
+    + '<th style="text-align:left;padding-right:16px">status</th>'
+    + '<th style="text-align:left">state</th></tr>';
+  for (const f of faults) {
+    const col = f.active ? '#ff9040' : '#8a94a0';
+    const rid = '0x' + f.routine.toString(16).toUpperCase().padStart(4, '0');
+    html += `<tr style="color:${col}"><td style="padding-right:16px">${rid}</td>`
+      + `<td style="padding-right:16px">${f.name || ''}</td>`
+      + `<td style="padding-right:16px">0x${f.status.toString(16).padStart(2,'0')}</td>`
+      + `<td>${f.active ? 'SET' : 'clear'}</td></tr>`;
+  }
+  html += '</table>';
+  el.className = '';
+  el.innerHTML = html;
+}
+
+function readDtc() {
+  const btn = document.getElementById('dtc-btn');
+  btn.disabled = true; btn.textContent = 'Reading...';
+  document.getElementById('dtc-body').textContent = 'unlocking and reading...';
+  fetch('/readdtc', { method: 'POST' })
+    .then(r => r.json())
+    .then(renderDtc)
+    .catch(e => { document.getElementById('dtc-body').textContent = 'error: ' + e; })
+    .finally(() => { btn.disabled = false; btn.textContent = 'Read stored faults'; });
+}
+
+function showTab(name) {
+  for (const t of ['pack', 'diag']) {
+    document.getElementById('tab-' + t).classList.toggle('active', t === name);
+    document.getElementById('tabbtn-' + t).classList.toggle('active', t === name);
+  }
 }
 
 let ws;

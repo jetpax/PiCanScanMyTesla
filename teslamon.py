@@ -14,7 +14,6 @@ Frame formats (validated empirically against this pack, 2026-07-02):
 """
 
 import asyncio
-import collections
 import csv
 import json
 import os
@@ -37,6 +36,18 @@ N_TEMPS = 32
 N_MUX = 32
 BRICKS_PER_MODULE = 6
 
+# UDS diagnostics (BMS on 0x602 req / 0x612 rsp). Security seed is static on
+# this BMS; KEY is the constant that unlocks it (from an AIDBOX capture).
+UDS_REQ_ID = 0x602
+UDS_RSP_ID = 0x612
+UDS_KEY = bytes([0x35, 0x34, 0x37, 0x36, 0x31, 0x30, 0x33, 0x32,
+                 0x3D, 0x3C, 0x3F, 0x3E, 0x39, 0x38, 0x3B, 0x3A])
+# Fault-clear routine IDs to enumerate, and tentative names from the AIDBOX
+# request/response trace (main trace pairs; treat names as approximate).
+FAULT_ROUTINES = list(range(0x0401, 0x0411))
+FAULT_NAMES = {0x0401: "~u025", 0x040A: "~F026", 0x040C: "~F152",
+               0x040D: "~F107"}
+
 state = {
     "bricks": [None] * N_BRICKS,
     "temps": [None] * N_TEMPS,
@@ -53,7 +64,6 @@ state = {
     "can_error": None,
     "health": {},
 }
-events = collections.deque(maxlen=1000)
 brick_last_event = [None] * N_BRICKS
 clients = set()
 EXCURSION_MV = 15.0
@@ -91,16 +101,6 @@ def handle_frame(msg):
                 prev = state["bricks"][bi]
                 if prev is not None and abs(v - prev) * 1000 > EXCURSION_MV:
                     brick_last_event[bi] = time.time()
-                    events.append(
-                        {
-                            "ts": round(time.time(), 3),
-                            "brick": bi + 1,
-                            "module": bi // BRICKS_PER_MODULE + 1,
-                            "from_v": prev,
-                            "to_v": v,
-                            "delta_mv": round((v - prev) * 1000),
-                        }
-                    )
                 state["bricks"][bi] = v
                 got_data = True
                 lo = state["brick_min"][bi]
@@ -231,14 +231,93 @@ def snapshot():
             "can_status": state["can_status"],
             "can_error": state["can_error"],
             "health": state["health"],
-            "events": list(events)[-50:][::-1],
             "bal_active": [
                 i + 1
                 for i, ts in enumerate(brick_last_event)
                 if ts is not None and time.time() - ts < BAL_ACTIVE_S
             ],
+            "dtc": state.get("dtc"),
         }
     )
+
+
+def uds_read_faults():
+    """Blocking: open a dedicated socket, unlock security, and READ each
+    fault routine's result (0x31 03, requestRoutineResults). Never sends
+    0x31 01 (startRoutine / clear). Returns a result dict."""
+    bus = can.Bus(channel=CAN_IFACE, interface="socketcan")
+
+    def raw(data):
+        bus.send(can.Message(arbitration_id=UDS_REQ_ID,
+                             data=data.ljust(8, b"\x00"), is_extended_id=False))
+
+    def send(payload):
+        if len(payload) <= 7:
+            raw(bytes([len(payload)]) + payload)
+            return
+        total = len(payload)
+        raw(bytes([0x10 | (total >> 8), total & 0xFF]) + payload[:6])
+        dl = time.time() + 1.0
+        while time.time() < dl:
+            m = bus.recv(timeout=dl - time.time())
+            if m and m.arbitration_id == UDS_RSP_ID and (m.data[0] >> 4) == 3:
+                break
+        idx, sn = 6, 1
+        while idx < total:
+            raw(bytes([0x20 | (sn & 0x0F)]) + payload[idx:idx + 7])
+            idx += 7
+            sn += 1
+            time.sleep(0.005)
+
+    def recv(timeout=1.2):
+        dl = time.time() + timeout
+        buf = b""
+        exp = None
+        while time.time() < dl:
+            m = bus.recv(timeout=max(0.01, dl - time.time()))
+            if not m or m.arbitration_id != UDS_RSP_ID:
+                continue
+            d = m.data
+            pci = d[0] >> 4
+            if pci == 0:
+                return d[1:1 + (d[0] & 0x0F)]
+            if pci == 1:
+                exp = ((d[0] & 0x0F) << 8) | d[1]
+                buf = bytes(d[2:8])
+                raw(bytes([0x30, 0, 0]))
+            elif pci == 2:
+                buf += bytes(d[1:8])
+                if exp and len(buf) >= exp:
+                    return buf[:exp]
+        return buf or None
+
+    def req(payload, t=1.2):
+        send(payload)
+        return recv(t)
+
+    try:
+        req(bytes([0x10, 0x03]))
+        req(bytes([0x27, 0x05]))
+        unlock = req(bytes([0x27, 0x06]) + UDS_KEY)
+        if not unlock or unlock[0] != 0x67:
+            return {"ok": False, "error": "security access denied",
+                    "ts": time.time()}
+        faults = []
+        for rid in FAULT_ROUTINES:
+            r = req(bytes([0x31, 0x03, rid >> 8, rid & 0xFF]))
+            if r is None or r[0] == 0x7F or len(r) < 5:
+                continue  # invalid/absent routine
+            status = r[4]
+            faults.append({
+                "routine": rid,
+                "name": FAULT_NAMES.get(rid, ""),
+                "status": status,
+                "active": status != 0,
+                "raw": r.hex(),
+            })
+        return {"ok": True, "ts": time.time(), "faults": faults}
+    finally:
+        bus.shutdown()
 
 
 async def keepalive_loop(bus):
@@ -314,6 +393,20 @@ async def resetter(request):
     return web.Response(text="min/max cleared\n")
 
 
+dtc_lock = asyncio.Lock()
+
+
+async def readdtc_handler(request):
+    if state["can_status"] != "ok":
+        return web.json_response({"ok": False, "error": "no CAN adapter"})
+    if dtc_lock.locked():
+        return web.json_response({"ok": False, "error": "read in progress"})
+    async with dtc_lock:
+        result = await asyncio.to_thread(uds_read_faults)
+    state["dtc"] = result
+    return web.json_response(result)
+
+
 async def broadcaster():
     while True:
         await asyncio.sleep(BROADCAST_PERIOD)
@@ -364,6 +457,7 @@ async def main():
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/state", state_handler)
     app.router.add_post("/reset", resetter)
+    app.router.add_post("/readdtc", readdtc_handler)
     app.router.add_get("/log.csv", csv_handler)
     runner = web.AppRunner(app)
     await runner.setup()
