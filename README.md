@@ -5,7 +5,9 @@ Read cell voltages, temperatures and pack V/A from a bench Tesla Model S
 view it from any browser on the network.
 
 Built for diagnosing a suspect module out of car. Known failure modes are
-listed at the bottom.
+listed at the bottom. CAN decode, BMS behaviours, and the out-of-car
+bring-up notes (HVIL, playing the car, contactor operation) are in
+[NOTES.md](NOTES.md).
 
 ![dashboard](img/dashboard.png)
 
