@@ -93,31 +93,31 @@ timer - but none of that applies to the classic pack.
    a weak bench rail so the coil-driver relays click but the contactors never
    latch. A charged 12 V battery pulls them in and holds.
 
-## Open item: contactors close then reopen into a lockout (bare terminals)
+## RESOLVED: contactors need a DC-link load on the HV output
 
-Symptom: POR -> STANDBY (~19 s, healthy) -> contactor CLOSING and FAULT in the
-same 0x212 transition (category 1 -> 4) -> open 100 ms later -> a few
-STANDBY<->FAULT retries -> latched lockout until next POR. Our heartbeat is
-gap-free throughout (ruled out on the bus), so it is NOT a comms timeout and
-NOT a missing car frame.
+Symptom was: POR -> STANDBY (~19 s, healthy) -> contactor CLOSING and FAULT in
+the same 0x212 transition (category 1 -> 4) -> open 100 ms later -> a few
+STANDBY<->FAULT retries -> latched lockout until next POR. Heartbeat gap-free
+throughout, so not a comms timeout and not a missing car frame.
 
-**Leading explanation: the pack needs a load on the HV output.** The internal
-HVP runs a precharge sequence at contactor close and monitors the output
-(DC-link) voltage. Into bare, floating terminals there is no defined
-capacitance/load, so the reading is irrational and the BMS trips at the close
-(cf. `BMS_a139_SW_DC_Link_V_Irrational` in the newer driver). This fits the
-timeline exactly and is corroborated by Battery-Emulator having no bare-terminal
-mode at all: its `precharge_control` always ramps into an inverter's DC-link
-capacitance, gated on `inverter_allows_contactor_closing`. DBE is designed to
-run packs out of the car but always with a load present.
+**Root cause: the pack needs a load (DC-link capacitance) on the HV output.**
+The internal HVP runs a precharge sequence at contactor close and monitors the
+output (DC-link) voltage. Into bare, floating terminals the reading is
+irrational and the BMS trips at the close (cf.
+`BMS_a139_SW_DC_Link_V_Irrational` in the newer driver). Corroborated by
+Battery-Emulator having no bare-terminal mode: its `precharge_control` always
+ramps into an inverter's DC-link capacitance, gated on
+`inverter_allows_contactor_closing`.
 
-Next test: present a defined load - a DC-link capacitor (few hundred uF, rated
->450 V) and/or a power resistor drawing a modest current - and retry. If it
-holds, confirmed.
+**Fix, HW-verified:** a **180 uF / 400 V capacitor across the load terminals**
+gives precharge a real capacitance to ramp into; the DC-link reads rational,
+precharge completes, and the main contactor **closes and holds**. (400 V is
+marginal on a bus that reaches ~403 V at full charge - use 450 V+ for anything
+permanent or near full charge.)
 
 `f023` (SW_Contactors_Open_HWOC) was a red herring: a stored historical count,
 set from the start, unclearable over UDS (the 0x02 routine collision means our
-"clear f023" was clearing f163). It is not believed to be the blocker.
+"clear f023" was clearing f163). It was never the blocker.
 
 Other unexplored lead: `#CONT_SERV_BYP` on X035 (contactor service bypass,
 ~10 V pulled up, unconnected in car) - possible service-mode input that could
